@@ -33,14 +33,12 @@ jobs:
       # ========== 3. 下载指定作者的内容 ==========
       - name: Download creator contents
         env:
-          FANBOX_SESSID: ${{ secrets.FANBOX_SESSID }}
           CREATOR_ID: ${{ secrets.CREATOR_ID }}
         run: |
           mkdir -p ./downloads
           
           echo "⬇️ 开始下载作者: $CREATOR_ID"
           ./fanbox-dl \
-            --sessid "$FANBOX_SESSID" \
             --creator "$CREATOR_ID" \
             --save-dir ./downloads \
             --dir-by-post \
