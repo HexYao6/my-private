@@ -1,0 +1,123 @@
+name: FANBOX Single Creator → PikPak
+
+on:
+  schedule:
+    # 每天北京时间凌晨 3 点执行（UTC 19:00）
+    - cron: '0 19 * * *'
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      # ========== 1. 检出仓库 ==========
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ========== 2. 安装 fanbox-dl ==========
+      - name: Install fanbox-dl
+        run: |
+          echo "🔍 获取 fanbox-dl 最新版本..."
+          VERSION=$(curl -s https://api.github.com/repos/hareku/fanbox-dl/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "📦 安装版本: $VERSION"
+          
+          wget -q "https://github.com/hareku/fanbox-dl/releases/download/${VERSION}/fanbox-dl_${VERSION#v}_Linux_x86_64.tar.gz"
+          tar -xzf fanbox-dl_*.tar.gz
+          chmod +x fanbox-dl
+          
+          echo "✅ fanbox-dl 安装完成:"
+          ./fanbox-dl --version
+
+      # ========== 3. 下载指定作者的内容 ==========
+      - name: Download creator contents
+        env:
+          FANBOX_SESSID: ${{ secrets.FANBOX_SESSID }}
+          CREATOR_ID: ${{ secrets.CREATOR_ID }}
+        run: |
+          mkdir -p ./downloads
+          
+          echo "⬇️ 开始下载作者: $CREATOR_ID"
+          ./fanbox-dl \
+            --sessid "$FANBOX_SESSID" \
+            --creator "$CREATOR_ID" \
+            --save-dir ./downloads \
+            --dir-by-post \
+            --skip-on-error \
+            --verbose
+          
+          echo ""
+          echo "📊 下载统计:"
+          FILE_COUNT=$(find ./downloads -type f | wc -l)
+          SIZE=$(du -sh ./downloads | awk '{print $1}')
+          echo "   文件数: $FILE_COUNT"
+          echo "   总大小: $SIZE"
+
+      # ========== 4. 安装 rclone ==========
+      - name: Install rclone
+        run: |
+          curl -s https://rclone.org/install.sh | sudo bash
+          echo "✅ rclone 安装完成:"
+          rclone version
+
+      # ========== 5. 还原 rclone 配置 ==========
+      - name: Setup rclone config
+        env:
+          RCLONE_CONFIG: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "$RCLONE_CONFIG" | base64 -d > ~/.config/rclone/rclone.conf
+          
+          echo "✅ rclone 配置已还原:"
+          rclone listremotes
+          
+          echo "🔍 测试 PikPak 连接..."
+          rclone ls "pikpak_remote:" --max-depth 1
+
+      # ========== 6. 上传到 PikPak ==========
+      - name: Upload to PikPak
+        env:
+          CREATOR_ID: ${{ secrets.CREATOR_ID }}
+        run: |
+          DATE=$(date +%Y-%m-%d)
+          TARGET="pikpak_remote:FANBOX-Backup/${CREATOR_ID}/${DATE}"
+          
+          echo ""
+          echo "☁️ 开始上传到 ${TARGET} ..."
+          
+          rclone copy ./downloads "${TARGET}" \
+            --progress \
+            --transfers 4 \
+            --checkers 8 \
+            --exclude ".git/**" \
+            --stats-one-line \
+            --stats 10s
+          
+          echo ""
+          echo "✅ 上传完成: ${TARGET}"
+          
+          UPLOAD_COUNT=$(rclone ls "${TARGET}" | wc -l)
+          echo "📁 已上传文件数: $UPLOAD_COUNT"
+
+      # ========== 7. 可选：Telegram 通知 ==========
+      - name: Send Telegram notification
+        if: always() && env.TG_BOT_TOKEN != ''
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          CREATOR_ID: ${{ secrets.CREATOR_ID }}
+        run: |
+          STATUS="${{ job.status }}"
+          DATE=$(date +%Y-%m-%d")
+          
+          if [ "$STATUS" == "success" ]; then
+            MSG="✅ FANBOX 备份成功%0A👤 作者: ${CREATOR_ID}%0A📅 ${DATE}%0A☁️ 路径: FANBOX-Backup/${CREATOR_ID}/${DATE}"
+          else
+            MSG="❌ FANBOX 备份失败%0A👤 作者: ${CREATOR_ID}%0A📅 ${DATE}%0A🔧 请检查 Actions 日志"
+          fi
+          
+          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT_ID}" \
+            -d "text=${MSG}" \
+            -d "parse_mode=HTML" || true
