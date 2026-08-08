@@ -23,8 +23,8 @@ jobs:
           VERSION=$(curl -s https://api.github.com/repos/hareku/fanbox-dl/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
           echo "📦 安装版本: $VERSION"
           
-          wget -q "https://github.com/hareku/fanbox-dl/releases/download/${VERSION}/fanbox-dl_${VERSION#v}_Linux_x86_64.tar.gz"
-          tar -xzf fanbox-dl_*.tar.gz
+          wget -q "https://github.com/hareku/fanbox-dl/releases/download/${VERSION}/fanbox-dl_Linux_x86_64.tar.gz"
+          tar -xzf fanbox-dl_Linux_x86_64.tar.gz
           chmod +x fanbox-dl
           
           echo "✅ fanbox-dl 安装完成:"
