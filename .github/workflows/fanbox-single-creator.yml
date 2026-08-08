@@ -16,35 +16,70 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ========== 2. 安装 fanbox-dl ==========
-      - name: Install fanbox-dl v0.28.4
-        run: |
-          wget -q "https://github.com/hareku/fanbox-dl/releases/download/v0.28.4/fanbox-dl_Linux_x86_64.tar.gz"
-          tar -xzf fanbox-dl_Linux_x86_64.tar.gz
-          chmod +x fanbox-dl
-          ./fanbox-dl --version
-
       # ========== 3. 下载指定作者的内容 ==========
-      - name: Download creator contents
+      - name: Download creator contents (Python)
         env:
           CREATOR_ID: ${{ secrets.CREATOR_ID }}
         run: |
-          mkdir -p ./downloads
-          
-          echo "⬇️ 开始下载作者: $CREATOR_ID"
-          ./fanbox-dl \
-            --creator "$CREATOR_ID" \
-            --save-dir ./downloads \
-            --dir-by-post \
-            --skip-on-error \
-            --verbose
-          
-          echo ""
-          echo "📊 下载统计:"
-          FILE_COUNT=$(find ./downloads -type f | wc -l)
-          SIZE=$(du -sh ./downloads | awk '{print $1}')
-          echo "   文件数: $FILE_COUNT"
-          echo "   总大小: $SIZE"
+          pip install requests -q
+          python3 << 'EOF'
+          import os, requests, json, urllib.request
+          from pathlib import Path
+
+          creator_id = os.environ["CREATOR_ID"]
+          save_dir = Path("./downloads") / creator_id
+          save_dir.mkdir(parents=True, exist_ok=True)
+
+          headers = {
+              "Origin": "https://www.fanbox.cc",
+              "Referer": f"https://www.fanbox.cc/@{creator_id}",
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          }
+
+          # 获取帖子列表
+          url = f"https://api.fanbox.cc/post.listCreator?creatorId={creator_id}&limit=100"
+          resp = requests.get(url, headers=headers)
+          resp.raise_for_status()
+          data = resp.json()
+
+          items = data.get("body", {}).get("items", [])
+          print(f"📋 找到 {len(items)} 个帖子")
+
+          for item in items:
+              post_id = item["id"]
+              post_title = item["title"]
+              post_dir = save_dir / f"{post_id}_{post_title[:50]}"
+              post_dir.mkdir(exist_ok=True)
+
+              # 下载图片
+              images = item.get("body", {}).get("images", [])
+              for i, img in enumerate(images):
+                  img_url = img["originalUrl"]
+                  ext = img_url.split(".")[-1].split("?")[0]
+                  filename = post_dir / f"{i+1:03d}.{ext}"
+                  if filename.exists():
+                      print(f"  ⏭️ 跳过已存在: {filename.name}")
+                      continue
+                  print(f"  ⬇️ 下载: {filename.name}")
+                  urllib.request.urlretrieve(img_url, filename)
+
+              # 下载文件附件
+              files = item.get("body", {}).get("files", [])
+              for f in files:
+                  file_url = f["url"]
+                  filename = post_dir / f["file_{f['name']}"
+                  if filename.exists():
+                      continue
+                  print(f"  ⬇️ 下载附件: {filename.name}")
+                  urllib.request.urlretrieve(file_url, filename)
+
+              # 保存文本内容
+              text = item.get("body", {}).get("text", "")
+              if text:
+                  (post_dir / "content.txt").write_text(text, encoding="utf-8")
+
+          print("✅ 下载完成")
+          EOF
 
       # ========== 4. 安装 rclone ==========
       - name: Install rclone
