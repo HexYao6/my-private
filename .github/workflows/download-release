@@ -1,0 +1,115 @@
+name: GitHub Release → PikPak
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: '源仓库 (owner/repo)'
+        required: false
+        default: 'babalae/better-genshin-impact'
+      tag:
+        description: 'Release tag (例如 v1.0.0)，留空则下载 latest'
+        required: false
+        default: ''
+      pattern:
+        description: '仅下载匹配的文件 (例如 *.zip)，留空下载全部'
+        required: false
+        default: ''
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve inputs
+        id: vars
+        run: |
+          REPO="${{ github.event.inputs.repository }}"
+          if [ -z "$REPO" ]; then
+            REPO="${{ github.repository }}"
+          fi
+          echo "repo=$REPO" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          echo "pattern=${{ github.event.inputs.pattern }}" >> "$GITHUB_OUTPUT"
+          echo "ℹ️ 目标仓库: $REPO"
+
+      # ========== 下载 Release 附件 ==========
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ steps.vars.outputs.repo }}"
+          TAG="${{ steps.vars.outputs.tag }}"
+          PATTERN="${{ steps.vars.outputs.pattern }}"
+
+          mkdir -p ./downloads
+
+          echo "⬇️ 下载 Release: ${REPO} @ ${TAG:-latest}"
+          ARGS=(--repo "$REPO" --dir ./downloads --clobber)
+          if [ -n "$TAG" ]; then
+            ARGS+=("$TAG")
+          fi
+          if [ -n "$PATTERN" ]; then
+            ARGS+=(--pattern "$PATTERN")
+          fi
+
+          gh release download "${ARGS[@]}"
+          echo "✅ 下载完成:"
+          ls -lah ./downloads
+
+      # ========== rclone 配置 & 上传 ==========
+      - name: Install rclone
+        run: |
+          curl -s https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Setup rclone config
+        env:
+          RCLONE_CONF_B64: ${{ secrets.RCLONE_CONF_B64 }}
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "$RCLONE_CONF_B64" | base64 -d > ~/.config/rclone/rclone.conf
+          rclone listremotes
+          rclone ls "pikpak_remote:" --max-depth 1
+
+      - name: Upload to PikPak
+        run: |
+          REPO="${{ steps.vars.outputs.repo }}"
+          TAG="${{ steps.vars.outputs.tag }}"
+          TAG="${TAG:-latest}"
+
+          TARGET="pikpak_remote:GitHub-Releases/${REPO}/${TAG}"
+          echo "☁️ 上传到 ${TARGET} ..."
+          rclone copy ./downloads "${TARGET}" \
+            --progress \
+            --transfers 4 \
+            --checkers 8 \
+            --stats-one-line \
+            --stats 10s
+          echo "✅ 上传完成"
+
+      - name: Send Telegram notification
+        if: always() && env.TG_BOT_TOKEN != ''
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          STATUS="${{ job.status }}"
+          REPO="${{ steps.vars.outputs.repo }}"
+          TAG="${{ steps.vars.outputs.tag }}"
+          TAG="${TAG:-latest}"
+          DATE=$(date +%Y-%m-%d)
+
+          if [ "$STATUS" == "success" ]; then
+            MSG="✅ Release → PikPak 备份成功%0A📦 ${REPO}%0A🏷️ ${TAG}%0A📅 ${DATE}"
+          else
+            MSG="❌ Release → PikPak 备份失败%0A📦 ${REPO}%0A🏷️ ${TAG}%0A📅 ${DATE}"
+          fi
+
+          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT_ID}" \
+            -d "text=${MSG}" || true
