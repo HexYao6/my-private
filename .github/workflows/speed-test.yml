@@ -1,0 +1,98 @@
+name: Speed Test - Actions to 123pan
+
+on:
+  workflow_dispatch:
+
+jobs:
+  speedtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate 50MB test file
+        run: |
+          dd if=/dev/urandom of=./testfile.bin bs=1M count=50
+          ls -lh ./testfile.bin
+
+      # ---------- 基线 1：Actions 国际出口 ----------
+      - name: Baseline 1 - International (Cloudflare)
+        run: |
+          echo "=== Cloudflare 下载测速（代表 Actions 国际带宽）==="
+          curl -L -o /dev/null \
+            -w "speed: %{speed_download} B/s | time: %{time_total}s | size: %{size_download} B\n" \
+            --max-time 30 \
+            "https://speed.cloudflare.com/__down?bytes=100000000" || true
+
+      # ---------- 基线 2：Actions → 国内链路 ----------
+      - name: Baseline 2 - China (Tsinghua mirror)
+        run: |
+          echo "=== 清华镜像下载测速（代表 Actions → 国内链路）==="
+          curl -L -o /dev/null \
+            -w "speed: %{speed_download} B/s | time: %{time_total}s | size: %{size_download} B\n" \
+            --max-time 30 \
+            "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ls-lR.gz" || true
+
+      # ---------- 安装 rclone ----------
+      - name: Install rclone
+        run: |
+          curl -s https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Setup rclone config
+        env:
+          RCLONE_CONF_B64: ${{ secrets.RCLONE_CONF_B64 }}
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "$RCLONE_CONF_B64" | base64 -d > ~/.config/rclone/rclone.conf
+          rclone listremotes
+          rclone lsd "123pan_remote:" || echo "⚠️ 列举失败"
+
+      # ---------- 123pan 单线程 ----------
+      - name: 123pan upload - single thread (max 90s)
+        run: |
+          echo "=== 123pan WebDAV 单线程上传测速（限时 90 秒）==="
+          timeout 90 rclone copy ./testfile.bin "123pan_remote:speedtest-single/" \
+            --stats 5s --stats-one-line \
+            --transfers 1 --checkers 1 \
+            --buffer-size 16M \
+            2>&1 | grep -E "(MiB|KiB|B)/s|ERROR|error" | tail -10 || true
+          echo "(以上为 90 秒内最后几条速率样本)"
+
+      - name: Cleanup single
+        if: always()
+        run: rclone purge "123pan_remote:speedtest-single" || true
+
+      # ---------- 123pan 多线程 ----------
+      - name: 123pan upload - multi-thread (max 90s)
+        run: |
+          echo "=== 123pan WebDAV 多线程上传测速（限时 90 秒）==="
+          timeout 90 rclone copy ./testfile.bin "123pan_remote:speedtest-multi/" \
+            --stats 5s --stats-one-line \
+            --transfers 1 \
+            --multi-thread-streams 4 \
+            --multi-thread-cutoff 1M \
+            --buffer-size 32M \
+            2>&1 | grep -E "(MiB|KiB|B)/s|ERROR|error" | tail -10 || true
+          echo "(以上为 90 秒内最后几条速率样本)"
+
+      - name: Cleanup multi
+        if: always()
+        run: rclone purge "123pan_remote:speedtest-multi" || true
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "========================================"
+          echo "📊 测速结果解读"
+          echo "========================================"
+          echo "基线 1 (Cloudflare)  → Actions 国际出口带宽"
+          echo "基线 2 (清华镜像)    → Actions 到国内链路带宽"
+          echo "单线程 / 多线程       → 123pan WebDAV 实际上传速率"
+          echo ""
+          echo "判断逻辑："
+          echo "  A. 基线2 快(MB/s) + 123pan 极慢(KB/s)  → 123pan WebDAV 通道限速，换 API 方案"
+          echo "  B. 多线程 >> 单线程                   → 单连接限速，多线程可缓解"
+          echo "  C. 基线2 本身就很慢(KB/s)             → Actions 到国内整体链路差，换目标"
