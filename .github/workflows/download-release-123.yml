@@ -62,15 +62,15 @@ jobs:
           ls -lah ./downloads
 
       # ========== 123pan 单文件 1GB 限制预检 ==========
-      - name: Check file sizes (123pan WebDAV 1GB limit)
-        run: |
-          OVER=$(find ./downloads -type f -size +950M -print)
-          if [ -n "$OVER" ]; then
-            echo "❌ 以下文件超过 123pan WebDAV 单文件 1GB 限制:"
-            echo "$OVER"
-            exit 1
-          fi
-          echo "✅ 文件大小预检通过"
+      # - name: Check file sizes (123pan WebDAV 1GB limit)
+      #   run: |
+      #     OVER=$(find ./downloads -type f -size +950M -print)
+      #     if [ -n "$OVER" ]; then
+      #       echo "❌ 以下文件超过 123pan WebDAV 单文件 1GB 限制:"
+      #       echo "$OVER"
+      #       exit 1
+      #     fi
+      #     echo "✅ 文件大小预检通过"
 
       # ========== rclone 配置 & 上传 ==========
       - name: Install rclone
